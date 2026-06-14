@@ -498,7 +498,7 @@ async function callClaude(route, clientBody) {
 
 // ─── ROUTES HEALTH ────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', version: '2.2', service: 'FitForge Backend', db: 'postgresql' });
+  res.json({ status: 'ok', version: '2.5', service: 'FitForge Backend', db: 'postgresql' });
 });
 
 // ─── ROUTES AUTH ─────────────────────────────────────────────────────────────
