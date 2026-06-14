@@ -68,8 +68,8 @@ async function initDB() {
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(cors({
   origin: function(origin, callback) {
-    if (!origin && process.env.NODE_ENV !== 'production') return callback(null, true);
-    if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    // Autoriser : pas d'origin (navigateur direct, curl) OU origine connue
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
     callback(new Error('CORS: origine non autorisée — ' + origin));
   },
   credentials: true
