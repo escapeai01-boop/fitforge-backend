@@ -1,4 +1,4 @@
-// FitForge Backend v2.8 — Analyse photo internationale (street food, cuisine mondiale)
+// FitForge Backend v2.9 — Analyse photo internationale (street food, cuisine mondiale)
 // v2.3 : Prompt analyze-food renforcé (valeurs nutritionnelles de référence)
 // v2.2 : PostgreSQL persistant
 
@@ -68,8 +68,8 @@ async function initDB() {
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(cors({
   origin: function(origin, callback) {
-    // Autoriser : pas d'origin (navigateur direct, curl) OU origine connue
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    // Autoriser : pas d'origin, origin 'null' (file://), ou origine connue
+    if (!origin || origin === 'null' || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
     callback(new Error('CORS: origine non autorisée — ' + origin));
   },
   credentials: true
@@ -505,7 +505,7 @@ async function callClaude(route, clientBody) {
 
 // ─── ROUTES HEALTH ────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', version: '2.8', service: 'FitForge Backend', db: 'postgresql' });
+  res.json({ status: 'ok', version: '2.9', service: 'FitForge Backend', db: 'postgresql' });
 });
 
 // ─── ROUTES AUTH ─────────────────────────────────────────────────────────────
@@ -845,7 +845,7 @@ async function start() {
   try {
     await initDB();
     app.listen(PORT, () => {
-      console.log(`FitForge Backend v2.8 (PostgreSQL) running on port ${PORT}`);
+      console.log(`FitForge Backend v2.9 (PostgreSQL) running on port ${PORT}`);
       console.log(`Anthropic API: ${ANTHROPIC_API_KEY ? 'OK' : '❌ MANQUANTE'}`);
       console.log(`Stripe: ${STRIPE_SECRET_KEY ? 'OK' : 'non configuré'}`);
       console.log(`Database: ${process.env.DATABASE_URL ? 'PostgreSQL connecté' : '❌ DATABASE_URL manquante'}`);
