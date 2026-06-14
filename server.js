@@ -1,4 +1,4 @@
-// FitForge Backend v2.7 — Analyse photo internationale (street food, cuisine mondiale)
+// FitForge Backend v2.8 — Analyse photo internationale (street food, cuisine mondiale)
 // v2.3 : Prompt analyze-food renforcé (valeurs nutritionnelles de référence)
 // v2.2 : PostgreSQL persistant
 
@@ -119,7 +119,7 @@ const CLAUDE_CONFIG = {
   model: 'claude-sonnet-4-6',
   max_tokens_by_route: {
     'analyze-food': 2000,
-    'generate-recipe': 3000,
+    'generate-recipe': 12000,
     'generate-program': 8000,
     'coach': 1000
   }
@@ -466,7 +466,10 @@ Réponds UNIQUEMENT en JSON valide sans markdown ni backticks :
 }
 
 async function callClaude(route, clientBody) {
-  const maxTokens = CLAUDE_CONFIG.max_tokens_by_route[route] || 1000;
+  const configMax = CLAUDE_CONFIG.max_tokens_by_route[route] || 1000;
+  // Permettre au client de demander plus (dans la limite de la config)
+  const clientMax = clientBody.max_tokens ? parseInt(clientBody.max_tokens) : 0;
+  const maxTokens = clientMax > 0 ? Math.min(clientMax, configMax) : configMax;
   let messages;
 
   if (route === 'analyze-food' && clientBody.image_base64) {
@@ -502,7 +505,7 @@ async function callClaude(route, clientBody) {
 
 // ─── ROUTES HEALTH ────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', version: '2.7', service: 'FitForge Backend', db: 'postgresql' });
+  res.json({ status: 'ok', version: '2.8', service: 'FitForge Backend', db: 'postgresql' });
 });
 
 // ─── ROUTES AUTH ─────────────────────────────────────────────────────────────
@@ -842,7 +845,7 @@ async function start() {
   try {
     await initDB();
     app.listen(PORT, () => {
-      console.log(`FitForge Backend v2.7 (PostgreSQL) running on port ${PORT}`);
+      console.log(`FitForge Backend v2.8 (PostgreSQL) running on port ${PORT}`);
       console.log(`Anthropic API: ${ANTHROPIC_API_KEY ? 'OK' : '❌ MANQUANTE'}`);
       console.log(`Stripe: ${STRIPE_SECRET_KEY ? 'OK' : 'non configuré'}`);
       console.log(`Database: ${process.env.DATABASE_URL ? 'PostgreSQL connecté' : '❌ DATABASE_URL manquante'}`);
