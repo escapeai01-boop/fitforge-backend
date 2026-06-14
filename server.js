@@ -1,4 +1,4 @@
-// FitForge Backend v2.6 — Analyse photo internationale (street food, cuisine mondiale)
+// FitForge Backend v2.7 — Analyse photo internationale (street food, cuisine mondiale)
 // v2.3 : Prompt analyze-food renforcé (valeurs nutritionnelles de référence)
 // v2.2 : PostgreSQL persistant
 
@@ -157,14 +157,14 @@ async function resetQuotasIfNewMonth(user) {
 }
 
 function checkQuota(user, type) {
-  // Compte dev — quotas illimités
+  // Compte dev ou admin — quotas illimités
   if (user.email === 'dev@fitforge.internal' || user.plan === 'dev') {
-    return { allowed: true, used: 0, limit: 999999, remaining: 999999 };
+    return { allowed: true, ok: true, used: 0, limit: 999999, remaining: 999999 };
   }
   const used = (user.quotas_used && user.quotas_used[type]) || 0;
   const extra = (user.extra_quotas && user.extra_quotas[type]) || 0;
   const limit = DEFAULT_QUOTAS[type] + extra;
-  return { ok: used < limit, used, limit, remaining: Math.max(0, limit - used) };
+  return { allowed: used < limit, ok: used < limit, used, limit, remaining: Math.max(0, limit - used) };
 }
 
 async function consumeQuota(user, type) {
@@ -502,7 +502,7 @@ async function callClaude(route, clientBody) {
 
 // ─── ROUTES HEALTH ────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', version: '2.6', service: 'FitForge Backend', db: 'postgresql' });
+  res.json({ status: 'ok', version: '2.7', service: 'FitForge Backend', db: 'postgresql' });
 });
 
 // ─── ROUTES AUTH ─────────────────────────────────────────────────────────────
@@ -741,7 +741,7 @@ app.post('/stripe/webhook', async (req, res) => {
 // ─── ROUTES CLAUDE ────────────────────────────────────────────────────────────
 async function claudeRoute(route, quotaType, req, res) {
   const quota = checkQuota(req.user, quotaType);
-  if (!quota.ok) {
+  if (!quota.allowed) {
     return res.status(429).json({
       error: `Quota ${quotaType} atteint (${quota.used}/${quota.limit} ce mois)`,
       code: 'QUOTA_EXCEEDED',
@@ -842,7 +842,7 @@ async function start() {
   try {
     await initDB();
     app.listen(PORT, () => {
-      console.log(`FitForge Backend v2.6 (PostgreSQL) running on port ${PORT}`);
+      console.log(`FitForge Backend v2.7 (PostgreSQL) running on port ${PORT}`);
       console.log(`Anthropic API: ${ANTHROPIC_API_KEY ? 'OK' : '❌ MANQUANTE'}`);
       console.log(`Stripe: ${STRIPE_SECRET_KEY ? 'OK' : 'non configuré'}`);
       console.log(`Database: ${process.env.DATABASE_URL ? 'PostgreSQL connecté' : '❌ DATABASE_URL manquante'}`);
