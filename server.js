@@ -1,4 +1,5 @@
-// FitForge Backend v2.3 — Prompt analyze-food renforcé (valeurs nutritionnelles de référence)
+// FitForge Backend v2.5 — Analyse photo internationale (street food, cuisine mondiale)
+// v2.3 : Prompt analyze-food renforcé (valeurs nutritionnelles de référence)
 // v2.2 : PostgreSQL persistant
 
 const express = require('express');
@@ -117,7 +118,7 @@ const DEFAULT_QUOTAS = {
 const CLAUDE_CONFIG = {
   model: 'claude-sonnet-4-6',
   max_tokens_by_route: {
-    'analyze-food': 1800,
+    'analyze-food': 2000,
     'generate-recipe': 3000,
     'generate-program': 8000,
     'coach': 1000
@@ -211,80 +212,252 @@ async function authMiddleware(req, res, next) {
 
 // ─── Helper Claude ────────────────────────────────────────────────────────────
 function buildFoodAnalysisPrompt(extraContext) {
-  const extra = extraContext ? `\n\nINFO SUPPLÉMENTAIRE DE L'UTILISATEUR : "${extraContext}"` : '';
-  return `Tu es un expert en nutrition clinique. Analyse cette photo de repas avec PRÉCISION MAXIMALE.
+  const extra = extraContext
+    ? `\n\n═══ INFORMATION PRIORITAIRE DE L'UTILISATEUR ═══
+L'utilisateur a indiqué : "${extraContext}"
+→ UTILISER CETTE INFORMATION EN PRIORITÉ ABSOLUE sur ta reconnaissance visuelle.
+→ Si c'est un nom de plat : baser toute la composition sur ce plat spécifique (ingrédients typiques de la recette).
+→ Si c'est une description partielle : l'utiliser pour affiner l'estimation visuelle.
+→ dish_name DOIT refléter cette information.`
+    : '';
+  return `Tu es un expert en nutrition avec une connaissance encyclopédique de la cuisine mondiale — street food asiatique, cuisine africaine, plats latino-américains, fast-food international, snacks de rue, etc. Tu peux identifier et analyser n'importe quel plat, qu'il soit servi dans une assiette de restaurant ou tenu à la main dans la rue.
 
-MÉTHODE OBLIGATOIRE — suivre dans cet ordre :
-1. Identifier le TYPE de contexte : maison / restaurant / fast-food / traiteur
-2. Pour CHAQUE ingrédient visible : estimer le poids en grammes via les repères visuels (assiette 28cm, paume de main = 85g viande, poing fermé = 150g féculents cuits)
-3. Calculer les macros de CHAQUE ingrédient séparément (protéines / glucides / lipides / calories)
-4. Additionner pour obtenir le total
-5. Appliquer les ajustements contextuels (voir ci-dessous)
+═══ ÉTAPE 1 — IDENTIFICATION ═══
+Identifier :
+a) Le plat ou les aliments (nom précis, origine culturelle si pertinente)
+b) Le contexte de consommation : street_food | restaurant | fast_food | takeaway | home | cafe | market_stall
+c) Le mode de cuisson dominant : frit / grillé / vapeur / cru / mijoté / sauté
 
-AJUSTEMENTS CONTEXTUELS OBLIGATOIRES :
-- Restaurant / traiteur : +35% sur les lipides (huiles cachées, beurre en cuisson)
-- Fast-food : utiliser les calories réelles connues — un Big Mac = 550 kcal, pas 350
-- Sauce visible (vinaigrette, mayonnaise, crème) : compter 80-120 kcal par cuillère à soupe
-- Fromage fondu ou râpé : minimum 80 kcal pour une poignée standard
-- Pain, viennoiserie, pâtes, riz : NE PAS sous-estimer — les féculents visuellement "petits" pèsent souvent 200-300g cuits
-- Friture / panure : multiplier les lipides par 2.5 vs la même protéine grillée
+Pour les plats inconnus ou inhabituels : raisonner depuis la composition probable (viande/féculent/sauce/légume) et les techniques de cuisson visibles. Ne jamais abandonner — toujours donner une estimation même sur un plat non identifié.
 
-VALEURS DE RÉFÉRENCE PRÉCISES (utiliser pour calibrer) :
-Protéines :
-  Blanc de poulet 100g cuit = 165 kcal / P:31g / G:0g / L:3.5g
-  Cuisse poulet 100g cuit = 210 kcal / P:26g / G:0g / L:11g
-  Steak bœuf 100g cuit = 250 kcal / P:26g / G:0g / L:16g
-  Saumon 100g cuit = 208 kcal / P:20g / G:0g / L:13g
-  Thon en boîte 100g égoutté = 116 kcal / P:26g / G:0g / L:1g
-  Œuf entier 1 moyen (55g) = 78 kcal / P:6g / G:0g / L:5.5g
-  Blanc d'œuf 1 = 17 kcal / P:3.6g / G:0g / L:0g
-  Crevettes 100g = 99 kcal / P:21g / G:0g / L:1.4g
+═══ ÉTAPE 2 — DÉCOMPOSITION VISUELLE ═══
+Repères de calibration visuelle :
+- Paume de main = 85-100g de viande / poisson cuit
+- Poing fermé = 150-200g de féculent cuit ou légume
+- Pouce = 15-20g de matière grasse (beurre, sauce épaisse)
+- Assiette standard 28cm de diamètre comme référence
+- Brochette de street food = 80-150g selon taille
+- Barquette takeaway standard = 300-450g de contenu
+- Bol ramen / pho = 500-700g total liquide inclus
+- Portion burger fast-food = 250-400g total pain inclus
 
-Féculents :
-  Riz blanc cuit 100g = 130 kcal / P:2.7g / G:28g / L:0.3g
-  Riz basmati cuit 100g = 121 kcal / P:2.5g / G:25g / L:0.4g
-  Pâtes cuites 100g = 131 kcal / P:5g / G:25g / L:1.1g
-  Patate douce cuite 100g = 90 kcal / P:2g / G:21g / L:0.1g
-  Pomme de terre cuite 100g = 87 kcal / P:1.9g / G:20g / L:0.1g
-  Pain de mie 1 tranche 30g = 80 kcal / P:2.5g / G:15g / L:1g
-  Baguette 1 portion 50g = 130 kcal / P:4g / G:25g / L:0.5g
-  Quinoa cuit 100g = 120 kcal / P:4.4g / G:21g / L:1.9g
+Décomposer CHAQUE élément visible séparément, même les petits (sauce, garniture, huile de cuisson estimée).
 
-Légumes :
-  Légumes verts cuits 100g = 25-35 kcal (compter 30 par défaut)
-  Tomate 100g = 18 kcal / P:0.9g / G:3.5g / L:0.2g
-  Avocat 100g = 160 kcal / P:2g / G:2g / L:15g
+═══ ÉTAPE 3 — CALCUL MACROS PAR INGRÉDIENT ═══
+Utiliser ces valeurs de référence pour les aliments courants, extrapoler pour les équivalents mondiaux :
 
-Matières grasses :
-  Huile d'olive 10g (1 c.soupe) = 88 kcal / L:10g
-  Beurre 10g = 74 kcal / L:8.3g
-  Mayonnaise 15g (1 c.soupe) = 103 kcal / L:11g
-  Vinaigrette 15g = 67 kcal / L:7g
-  Fromage râpé 20g = 80 kcal / P:5g / L:6.5g
-  Fromage de chèvre 30g = 80 kcal / P:5g / L:6.4g
+PROTÉINES (pour 100g cuit) :
+  Volaille grillée (poulet, canard, dinde) : 165-210 kcal / P:26-31g / L:3-11g / G:0g
+  Porc grillé ou rôti : 242 kcal / P:27g / L:14g / G:0g
+  Bœuf grillé : 250 kcal / P:26g / L:16g / G:0g
+  Agneau grillé : 258 kcal / P:25g / L:17g / G:0g
+  Poisson blanc grillé (cabillaud, tilapia, bar) : 105 kcal / P:23g / L:1g / G:0g
+  Poisson gras grillé (saumon, maquereau, sardine) : 200-250 kcal / P:20-22g / L:13-17g / G:0g
+  Crevettes / fruits de mer : 99 kcal / P:21g / L:1.4g / G:0g
+  Tofu ferme 100g : 76 kcal / P:8g / L:4.5g / G:1.9g
+  Œuf entier 1 moyen : 78 kcal / P:6g / L:5.5g / G:0g
+  Légumineuses cuites 100g (lentilles, pois chiches, haricots) : 110-130 kcal / P:7-9g / L:0.5g / G:18-22g
+  FRITURE : multiplier les lipides par 2.5 et ajouter 15-25g de lipides pour la panure/huile absorbée
 
-RÈGLES ANTI-SOUS-ESTIMATION :
-- Une portion de riz dans un restaurant asiatique = 250-350g cuit (pas 100g)
-- Une portion de pâtes en restaurant = 200-300g cuit
-- Un steak au restaurant = 180-220g minimum
-- Si tu hésites entre deux estimations de grammage, prendre la plus haute
-- Ne pas oublier la matière grasse de cuisson même si invisible : grillé = +5g huile, sauté = +10-15g, frit = +20-30g${extra}
+FÉCULENTS (pour 100g cuit) :
+  Riz blanc / jasmin / gluant : 130 kcal / P:2.7g / G:28g / L:0.3g
+  Nouilles de riz cuites : 108 kcal / P:2g / G:25g / L:0.2g
+  Nouilles soba cuites : 99 kcal / P:5g / G:21g / L:0.1g
+  Nouilles ramen / egg noodles cuites : 138 kcal / P:5g / G:25g / L:2g
+  Pâtes cuites : 131 kcal / P:5g / G:25g / L:1.1g
+  Pain plat (naan, pita, tortilla) 1 pièce 60-80g : 180-220 kcal / P:6g / G:34g / L:3g
+  Patate douce cuite 100g : 90 kcal / P:2g / G:21g / L:0.1g
+  Pomme de terre cuite 100g : 87 kcal / P:1.9g / G:20g / L:0.1g
+  Frites 100g : 312 kcal / P:3.4g / G:41g / L:15g
+  Manioc / taro / igname cuit 100g : 112-120 kcal / P:1.5g / G:27g / L:0.2g
 
+SAUCES ET ACCOMPAGNEMENTS (estimer la quantité visible) :
+  Sauce soja 15ml (1 c.soupe) : 9 kcal / P:1.3g / G:0.8g / L:0g
+  Sauce huître 15ml : 29 kcal / G:7g
+  Sauce cacahuète 30g (2 c.soupe) : 188 kcal / P:8g / G:7g / L:16g
+  Curry / sauce cocotte avec lait de coco : 150-200 kcal pour 100ml
+  Hummus 30g : 83 kcal / P:3g / G:6g / L:5.5g
+  Guacamole 30g : 48 kcal / P:0.6g / G:2.5g / L:4.5g
+  Sauce chili douce 15ml : 23 kcal / G:5.5g
+  Tahini 15g : 89 kcal / P:3g / G:3g / L:8g
+  Mayonnaise / aioli 15g : 103 kcal / L:11g
+  Crème fraîche / sour cream 30g : 58 kcal / L:6g
+
+MATIÈRES GRASSES ET CUISSON :
+  Huile (toutes) 10g : 88 kcal / L:10g
+  Beurre 10g : 74 kcal / L:8.3g
+  Huile de cuisson invisible : grillé +5g, sauté +10g, wok +15g, frit +20-30g
+  Lait de coco 100ml : 197 kcal / L:21g / G:3g
+
+DESSERTS ET PÂTISSERIES OCCIDENTAUX :
+  Boule de glace standard 80g (vanille, chocolat, fraise) : 150-180 kcal / G:20g / L:8g / P:2g
+  Bâtonnet glacé enrobé chocolat (Magnum style) : 250-280 kcal / G:23g / L:17g
+  Sorbet 1 boule 80g : 80-100 kcal / G:22g / L:0g
+  Glace soft-serve cornet : 220-280 kcal / G:38g / L:8g
+  Chantilly 30g : 93 kcal / L:9g / G:2.5g
+  Gaufre nature 100g : 291 kcal / G:43g / L:11g / P:7g
+  Crêpe nature 60g : 130 kcal / G:18g / L:5g / P:4g
+  Pancake 60g : 175 kcal / G:26g / L:5g / P:5g
+  Brownie 60g : 243 kcal / G:32g / L:12g / P:3g
+  Fondant / moelleux chocolat 80g : 310 kcal / G:38g / L:16g / P:5g
+  Muffin standard 100g : 375 kcal / G:51g / L:17g / P:5g
+  Croissant 60g : 231 kcal / G:26g / L:12g / P:4.5g
+  Pain au chocolat 80g : 330 kcal / G:40g / L:16g / P:6g
+  Éclair chocolat 100g : 290 kcal / G:35g / L:14g / P:5g
+  Millefeuille 1 part 100g : 395 kcal / G:45g / L:22g / P:5g
+  Tarte aux pommes 1 part 120g : 280 kcal / G:38g / L:13g / P:3g
+  Tarte au citron meringuée 1 part 120g : 320 kcal / G:46g / L:13g / P:4g
+  Cheesecake 1 part 120g : 370 kcal / G:33g / L:23g / P:7g
+  Tiramisu 1 part 120g : 290 kcal / G:27g / L:17g / P:6g
+  Panna cotta 100g : 200 kcal / G:18g / L:13g / P:3g
+  Mousse au chocolat 100g : 285 kcal / G:26g / L:18g / P:5g
+  Crème brûlée 120g : 280 kcal / G:25g / L:17g / P:5g
+  Île flottante 150g : 190 kcal / G:28g / L:6g / P:7g
+  Profiteroles 3 pièces 100g : 350 kcal / G:32g / L:21g / P:6g
+  Baba au rhum 80g : 220 kcal / G:35g / L:5g / P:4g
+  Cannelé 50g : 172 kcal / G:30g / L:4.5g / P:3g
+  Macaron 1 pièce 15g : 65 kcal / G:9g / L:3g / P:1g
+  Cookie 40g : 185 kcal / G:25g / L:9g / P:2.5g
+  Financier 30g : 130 kcal / G:14g / L:7.5g / P:2.5g
+  Donut glacé 60g : 253 kcal / G:31g / L:13g / P:3g
+  Beignet sucré 50g : 210 kcal / G:26g / L:10g / P:3g
+  Churros 100g avec sucre : 364 kcal / G:43g / L:19g / P:6g
+  Brownie blondie 60g : 255 kcal / G:33g / L:12g / P:3g
+  Carrot cake 1 part 100g : 415 kcal / G:52g / L:21g / P:4g
+  Red velvet cake 1 part 100g : 380 kcal / G:50g / L:18g / P:4g
+  Banana bread 1 tranche 60g : 196 kcal / G:32g / L:6g / P:3.5g
+  Chips 30g : 160 kcal / G:15g / L:10g
+  Barre chocolatée 50g (Snickers/Mars/KitKat) : 230-250 kcal / G:30-35g / L:10-13g / P:4g
+  Nutella 20g (1 c.soupe) : 118 kcal / G:13g / L:7g / P:1.5g
+  Bonbons gélifiés 30g : 105 kcal / G:26g / L:0g
+  Sucette standard 12g : 45 kcal / G:11g
+  Réglisse 30g : 100 kcal / G:23g / L:0.5g
+  Guimauve 1 pièce 7g : 23 kcal / G:6g
+  Caramel bonbon 10g : 39 kcal / G:8g / L:1g
+  Nougat 30g : 115 kcal / G:22g / L:2.5g / P:1.5g
+
+DESSERTS ET SUCRERIES ASIATIQUES :
+  Mochi 1 pièce 45g : 100 kcal / G:22g / L:1g / P:1.5g
+  Daifuku 1 pièce 50g : 120 kcal / G:26g / L:1g / P:2g
+  Taiyaki 1 pièce 80g : 200 kcal / G:38g / L:3.5g / P:4.5g
+  Dorayaki 1 pièce 80g : 230 kcal / G:44g / L:4g / P:5g
+  Anmitsu 1 bol 200g : 180 kcal / G:40g / L:1g / P:3g
+  Kakigori (glace pilée siropée) 200g : 120-180 kcal / G:30-45g / L:0g
+  Bingsu coréen 300g : 280-400 kcal / G:65-90g / L:3-8g
+  Matcha ice cream 1 boule 80g : 160 kcal / G:20g / L:8g / P:3g
+  Sesame balls (jian dui) 1 pièce 50g : 150 kcal / G:22g / L:6g / P:3g
+  Tang yuan 3 pièces 90g : 210 kcal / G:35g / L:6g / P:4g
+  Egg waffle HK 1 entier 150g : 380 kcal / G:55g / L:14g / P:8g
+  Pandan cake 1 part 80g : 265 kcal / G:40g / L:10g / P:4g
+  Kue lapis (gâteau couches) 60g : 180 kcal / G:32g / L:5g / P:2g
+  Halo-halo philippin 1 bol 300g : 350-450 kcal / G:70-90g / L:5-12g
+  Gulab jamun 2 pièces 80g : 280 kcal / G:45g / L:9g / P:4g
+  Jalebi 60g : 230 kcal / G:45g / L:5g / P:2g
+  Halva 50g : 250 kcal / G:28g / L:14g / P:5g
+  Baklava 1 pièce 40g : 185 kcal / G:22g / L:10g / P:2g
+  Loukoum 1 pièce 15g : 55 kcal / G:13g / L:0g
+  Kunafa 1 part 100g : 350 kcal / G:42g / L:17g / P:7g
+  Takoyaki sucré 1 pièce 30g : 55 kcal / G:8g / L:2g / P:2g
+  Bubble tea sans perles 400ml : 180-250 kcal / G:40-55g / L:3-6g
+  Bubble tea avec perles tapioca 500ml : 280-380 kcal / G:65-85g / L:3-8g
+  Taro milk tea 400ml : 280 kcal / G:45g / L:8g / P:3g
+
+DESSERTS LATINOS ET AUTRES :
+  Churros 100g avec sauce chocolat : 420 kcal / G:50g / L:21g / P:6g
+  Tres leches cake 1 part 120g : 380 kcal / G:50g / L:17g / P:8g
+  Flan / crème caramel 120g : 200 kcal / G:30g / L:6g / P:6g
+  Alfajor 1 pièce 50g : 210 kcal / G:30g / L:9g / P:2.5g
+  Brigadeiro 1 pièce 20g : 90 kcal / G:13g / L:4g / P:1g
+  Pastel de nata 1 pièce 80g : 265 kcal / G:33g / L:13g / P:5g
+  Knafeh 1 part 100g : 350 kcal / G:42g / L:17g / P:7g
+
+BOISSONS SUCRÉES ET SODAS :
+  Coca-Cola 330ml (canette) : 139 kcal / G:35g
+  Coca-Cola Zero / Diet 330ml : 1 kcal
+  Pepsi 330ml : 150 kcal / G:37g
+  Sprite / 7Up 330ml : 136 kcal / G:34g
+  Orangina 330ml : 145 kcal / G:34g
+  Fanta orange 330ml : 141 kcal / G:35g
+  Schweppes tonic 330ml : 109 kcal / G:27g
+  Red Bull 250ml : 113 kcal / G:28g
+  Monster 500ml : 225 kcal / G:54g
+  Lipton Ice Tea pêche 330ml : 122 kcal / G:29g
+  Innocent smoothie fruits 250ml : 120-150 kcal / G:28-35g
+  Jus d'orange 250ml : 110 kcal / G:25g
+  Lait entier 250ml : 161 kcal / P:8g / G:12g / L:9g
+  Lait écrémé 250ml : 88 kcal / P:8.5g / G:12g / L:0.1g
+  Café noir espresso 30ml : 2 kcal
+  Latte / cappuccino lait entier 250ml : 120-150 kcal / P:6g / G:12g / L:6g
+  Matcha latte 300ml : 180 kcal / G:25g / L:6g / P:5g
+  Calpico / Calpis 300ml : 135 kcal / G:32g
+  Ramune 200ml : 84 kcal / G:21g
+  Yakult 65ml : 50 kcal / G:11g
+  Pocari Sweat 500ml : 130 kcal / G:31g
+  100Plus / isotonique 500ml : 125 kcal / G:30g
+  Lassi mangue 300ml : 210 kcal / G:38g / L:4g / P:5g
+  Agua fresca 300ml : 90-120 kcal / G:22-30g
+
+ALCOOLS ET BIÈRES :
+  MÉTHODE PHOTO ÉTIQUETTE : si l'image montre une étiquette de vin/bière, identifier marque + millésime + type et calculer depuis la teneur en alcool visible (% ABV). Formule : kcal alcool = volume_ml × degré_alcool/100 × 0.789 × 7. Ajouter résidus sucrés selon style.
+  
+  Verre de vin rouge standard 150ml (12-14% ABV) : 125-145 kcal / G:3-4g / alcool:18g
+  Verre de vin blanc sec 150ml (11-13% ABV) : 115-130 kcal / G:1-2g / alcool:16g
+  Verre de vin blanc moelleux 150ml : 160-190 kcal / G:12-18g / alcool:15g
+  Verre de champagne / prosecco 125ml : 95-105 kcal / G:3g / alcool:13g
+  Verre de rosé 150ml (12% ABV) : 120-130 kcal / G:4g / alcool:16g
+  Pinte de bière blonde 500ml (5% ABV) : 215 kcal / G:17g / alcool:20g
+  Pinte de bière brune 500ml (6% ABV) : 260 kcal / G:20g / alcool:24g
+  Bière légère / light 330ml (3.5% ABV) : 100 kcal / G:5g / alcool:9g
+  Canette bière standard 330ml (5% ABV) : 142 kcal / G:11g / alcool:13g
+  Craft IPA 330ml (6.5% ABV) : 195 kcal / G:16g / alcool:17g
+  Soju 50ml (25% ABV) : 100 kcal / alcool:10g
+  Shochu 50ml (25% ABV) : 97 kcal / alcool:9.8g
+  Whisky / rhum / vodka 40ml (40% ABV) : 110 kcal / alcool:13g
+  Gin tonic 200ml : 143 kcal / G:14g / alcool:14g
+  Mojito 250ml : 190 kcal / G:24g / alcool:14g
+  Margarita 150ml : 200 kcal / G:14g / alcool:20g
+  Spritz Aperol 200ml : 160 kcal / G:18g / alcool:11g
+  Sangria 200ml : 160 kcal / G:20g / alcool:14g
+  Hard seltzer 330ml (4-5% ABV) : 95-110 kcal / G:1-3g
+  Cidre brut 330ml (5% ABV) : 152 kcal / G:13g / alcool:13g
+
+═══ ÉTAPE 4 — AJUSTEMENTS CONTEXTUELS ═══
+Street food / marché : portions souvent plus petites mais riches en graisses de cuisson — appliquer +15g lipides cuisson
+Restaurant : +35% lipides vs estimation maison (huiles cachées, beurre finish)
+Fast-food : utiliser calories connues réelles (Big Mac 550 kcal, portion frites standard 365 kcal, Chicken McNuggets 10pc 470 kcal)
+Takeaway barquette : portion généreuse — ajuster riz ou féculent à 280-350g minimum
+Ramen / Pho / soupe repas : compter le bouillon (50-100 kcal/bol) + nouilles + protéine séparément
+Repas partagé (style asiatique, plats au centre de la table) : détecter le contexte, estimer pour 1 portion individuelle (environ 1/4 à 1/3 du plat visible), indiquer "shared_dish: true" dans le JSON
+Étiquette vin/bière visible : identifier la boisson depuis l'étiquette, calculer calories pour 1 verre standard (150ml vin, 330ml bière)
+Photo avec boisson à côté du repas : inclure la boisson dans le breakdown et dans les macros totales
+
+═══ ÉTAPE 5 — RÈGLES ANTI-SOUS-ESTIMATION ═══
+- Si tu hésites entre deux grammages, prendre le plus élevé
+- Riz dans un restaurant asiatique = 250-350g cuit (jamais 100g)
+- Brochette de viande grasse (porc, agneau) tenue à la main = 100-150g + graisse de cuisson
+- Visible ou pas, toujours compter la matière grasse de cuisson
+- Plat avec sauce épaisse (curry, ragù, ragoût) = la sauce ajoute 100-200 kcal/portion
+- Boisson alcoolisée visible = toujours l'inclure dans le total (les calories alcool sont souvent oubliées)
+- Dessert avec chantilly ou sauce chocolat = compter la garniture séparément${extra}
+
+═══ FORMAT DE RÉPONSE ═══
 Réponds UNIQUEMENT en JSON valide sans markdown ni backticks :
 {
-  "dish_name": "Nom précis du plat",
-  "context": "home | restaurant | fast_food | takeaway",
+  "dish_name": "Nom précis du plat (et origine si pertinente)",
+  "context": "street_food | restaurant | fast_food | takeaway | home | cafe | market_stall",
+  "cooking_method": "fried | grilled | steamed | raw | braised | stir_fried | mixed",
   "confidence": 0.85,
   "needs_clarification": false,
   "clarification_question": null,
   "ingredients_breakdown": [
-    {"name": "Blanc de poulet grillé", "estimated_grams": 160, "calories": 264, "protein": 50, "carbs": 0, "fat": 5.6},
-    {"name": "Riz blanc cuit", "estimated_grams": 250, "calories": 325, "protein": 6.8, "carbs": 70, "fat": 0.8},
-    {"name": "Huile de cuisson estimée", "estimated_grams": 10, "calories": 88, "protein": 0, "carbs": 0, "fat": 10}
+    {"name": "Poulet grillé (cuisse)", "estimated_grams": 150, "calories": 315, "protein": 39, "carbs": 0, "fat": 16.5},
+    {"name": "Riz jasmin cuit", "estimated_grams": 280, "calories": 364, "protein": 7.6, "carbs": 78, "fat": 0.8},
+    {"name": "Sauce satay cacahuète", "estimated_grams": 40, "calories": 250, "protein": 10.6, "carbs": 9.3, "fat": 21},
+    {"name": "Huile cuisson estimée", "estimated_grams": 12, "calories": 106, "protein": 0, "carbs": 0, "fat": 12}
   ],
-  "macros": {"protein": 57, "carbs": 70, "fat": 16, "calories": 677},
+  "macros": {"protein": 57, "carbs": 87, "fat": 50, "calories": 1035},
   "meal_type": "lunch",
-  "accuracy_note": "Portion restaurant estimée — riz 250g, poulet 160g, huile cuisson incluse"
+  "accuracy_note": "Portion street food estimée — cuisse poulet grillée 150g, riz généreusement dosé, sauce cacahuète incluse"
 }`;
 }
 
@@ -629,7 +802,7 @@ async function start() {
   try {
     await initDB();
     app.listen(PORT, () => {
-      console.log(`FitForge Backend v2.3 (PostgreSQL) running on port ${PORT}`);
+      console.log(`FitForge Backend v2.5 (PostgreSQL) running on port ${PORT}`);
       console.log(`Anthropic API: ${ANTHROPIC_API_KEY ? 'OK' : '❌ MANQUANTE'}`);
       console.log(`Stripe: ${STRIPE_SECRET_KEY ? 'OK' : 'non configuré'}`);
       console.log(`Database: ${process.env.DATABASE_URL ? 'PostgreSQL connecté' : '❌ DATABASE_URL manquante'}`);
