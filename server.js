@@ -1,4 +1,4 @@
-// FitForge Backend v2.5 — Analyse photo internationale (street food, cuisine mondiale)
+// FitForge Backend v2.6 — Analyse photo internationale (street food, cuisine mondiale)
 // v2.3 : Prompt analyze-food renforcé (valeurs nutritionnelles de référence)
 // v2.2 : PostgreSQL persistant
 
@@ -157,6 +157,10 @@ async function resetQuotasIfNewMonth(user) {
 }
 
 function checkQuota(user, type) {
+  // Compte dev — quotas illimités
+  if (user.email === 'dev@fitforge.internal' || user.plan === 'dev') {
+    return { allowed: true, used: 0, limit: 999999, remaining: 999999 };
+  }
   const used = (user.quotas_used && user.quotas_used[type]) || 0;
   const extra = (user.extra_quotas && user.extra_quotas[type]) || 0;
   const limit = DEFAULT_QUOTAS[type] + extra;
@@ -498,7 +502,7 @@ async function callClaude(route, clientBody) {
 
 // ─── ROUTES HEALTH ────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', version: '2.5', service: 'FitForge Backend', db: 'postgresql' });
+  res.json({ status: 'ok', version: '2.6', service: 'FitForge Backend', db: 'postgresql' });
 });
 
 // ─── ROUTES AUTH ─────────────────────────────────────────────────────────────
@@ -789,6 +793,42 @@ app.get('/quotas', authMiddleware, async (req, res) => {
   res.json({ quotas, reset_date: req.user.quota_reset_date });
 });
 
+// ─── Route admin — token développeur permanent ───────────────────────────────
+// Usage : GET /admin/dev-token?secret=FITFORGE_DEV_2026
+// Crée un compte dev avec abo actif permanent + quotas illimités
+app.get('/admin/dev-token', async (req, res) => {
+  const ADMIN_SECRET = 'FITFORGE_DEV_2026';
+  if (req.query.secret !== ADMIN_SECRET) return res.status(403).json({ error: 'Accès refusé' });
+  const DEV_EMAIL = 'dev@fitforge.internal';
+  const DEV_EXPIRES = new Date('2099-01-01').getTime();
+  const EMPTY_QUOTAS = JSON.stringify({ photo_scans: 0, recipes: 0, programs: 0, coach_messages: 0 });
+  try {
+    const existing = await pool.query('SELECT email FROM users WHERE email = $1', [DEV_EMAIL]);
+    if (existing.rows.length === 0) {
+      await pool.query(
+        'INSERT INTO users (email, password_hash, created_at, subscription_status, trial_ends_at, subscription_ends_at, plan, quotas_used, extra_quotas, quota_reset_date) VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$8,$3)',
+        [DEV_EMAIL, hashPassword('dev_internal'), Date.now(), 'active', DEV_EXPIRES, 'dev', EMPTY_QUOTAS, EMPTY_QUOTAS]
+      );
+    } else {
+      await pool.query(
+        'UPDATE users SET subscription_status=$1, subscription_ends_at=$2, plan=$3 WHERE email=$4',
+        ['active', DEV_EXPIRES, 'dev', DEV_EMAIL]
+      );
+    }
+    await pool.query('DELETE FROM sessions WHERE email = $1', [DEV_EMAIL]);
+    const devToken = crypto.randomBytes(32).toString('hex');
+    await pool.query('INSERT INTO sessions (token, email, expires_at) VALUES ($1,$2,$3)', [devToken, DEV_EMAIL, DEV_EXPIRES]);
+    res.json({
+      success: true,
+      dev_token: devToken,
+      email: DEV_EMAIL,
+      expires: 'jamais (2099)',
+      copy_paste: 'localStorage.setItem("ff_jwt","' + devToken + '");localStorage.setItem("ff_email","' + DEV_EMAIL + '")'
+    });
+    console.log('[ADMIN] Token dev généré');
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ─── Nettoyage sessions expirées (toutes les 24h) ────────────────────────────
 setInterval(async () => {
   try {
@@ -802,7 +842,7 @@ async function start() {
   try {
     await initDB();
     app.listen(PORT, () => {
-      console.log(`FitForge Backend v2.5 (PostgreSQL) running on port ${PORT}`);
+      console.log(`FitForge Backend v2.6 (PostgreSQL) running on port ${PORT}`);
       console.log(`Anthropic API: ${ANTHROPIC_API_KEY ? 'OK' : '❌ MANQUANTE'}`);
       console.log(`Stripe: ${STRIPE_SECRET_KEY ? 'OK' : 'non configuré'}`);
       console.log(`Database: ${process.env.DATABASE_URL ? 'PostgreSQL connecté' : '❌ DATABASE_URL manquante'}`);
