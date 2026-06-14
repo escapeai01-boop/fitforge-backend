@@ -1,6 +1,5 @@
-// FitForge Backend v2.2 — PostgreSQL persistant
-// Remplace le stockage en mémoire (Map) par PostgreSQL Railway
-// Toutes les corrections sécurité de v2.1 sont conservées
+// FitForge Backend v2.3 — Prompt analyze-food renforcé (valeurs nutritionnelles de référence)
+// v2.2 : PostgreSQL persistant
 
 const express = require('express');
 const cors = require('cors');
@@ -118,7 +117,7 @@ const DEFAULT_QUOTAS = {
 const CLAUDE_CONFIG = {
   model: 'claude-sonnet-4-6',
   max_tokens_by_route: {
-    'analyze-food': 1200,
+    'analyze-food': 1800,
     'generate-recipe': 3000,
     'generate-program': 8000,
     'coach': 1000
@@ -212,30 +211,80 @@ async function authMiddleware(req, res, next) {
 
 // ─── Helper Claude ────────────────────────────────────────────────────────────
 function buildFoodAnalysisPrompt(extraContext) {
-  const extra = extraContext ? `\n\nINFO SUPPLÉMENTAIRE : "${extraContext}"` : '';
-  return `Tu es un expert en nutrition et analyse alimentaire. Analyse cette photo de repas avec PRÉCISION MAXIMALE.
+  const extra = extraContext ? `\n\nINFO SUPPLÉMENTAIRE DE L'UTILISATEUR : "${extraContext}"` : '';
+  return `Tu es un expert en nutrition clinique. Analyse cette photo de repas avec PRÉCISION MAXIMALE.
 
-MÉTHODE D'ANALYSE :
-1. Identifie CHAQUE ingrédient visible et ses portions estimées en grammes
-2. Calcule les macros pour CHAQUE composant séparément puis additionne
-3. Base tes estimations sur les tailles d'assiette standard (28cm) et les portions réelles
-4. Compte l'huile de cuisson estimée (+5-15g selon le mode de cuisson)
-5. Ne sous-estime JAMAIS les calories — les gens sous-estiment naturellement leurs portions
-6. Un plat de restaurant = portions généreuses (30-50% de plus qu'à la maison)
-7. Si tu vois des sauces, huiles, fromage — ils peuvent doubler les calories${extra}
+MÉTHODE OBLIGATOIRE — suivre dans cet ordre :
+1. Identifier le TYPE de contexte : maison / restaurant / fast-food / traiteur
+2. Pour CHAQUE ingrédient visible : estimer le poids en grammes via les repères visuels (assiette 28cm, paume de main = 85g viande, poing fermé = 150g féculents cuits)
+3. Calculer les macros de CHAQUE ingrédient séparément (protéines / glucides / lipides / calories)
+4. Additionner pour obtenir le total
+5. Appliquer les ajustements contextuels (voir ci-dessous)
 
-Réponds UNIQUEMENT en JSON valide sans markdown :
+AJUSTEMENTS CONTEXTUELS OBLIGATOIRES :
+- Restaurant / traiteur : +35% sur les lipides (huiles cachées, beurre en cuisson)
+- Fast-food : utiliser les calories réelles connues — un Big Mac = 550 kcal, pas 350
+- Sauce visible (vinaigrette, mayonnaise, crème) : compter 80-120 kcal par cuillère à soupe
+- Fromage fondu ou râpé : minimum 80 kcal pour une poignée standard
+- Pain, viennoiserie, pâtes, riz : NE PAS sous-estimer — les féculents visuellement "petits" pèsent souvent 200-300g cuits
+- Friture / panure : multiplier les lipides par 2.5 vs la même protéine grillée
+
+VALEURS DE RÉFÉRENCE PRÉCISES (utiliser pour calibrer) :
+Protéines :
+  Blanc de poulet 100g cuit = 165 kcal / P:31g / G:0g / L:3.5g
+  Cuisse poulet 100g cuit = 210 kcal / P:26g / G:0g / L:11g
+  Steak bœuf 100g cuit = 250 kcal / P:26g / G:0g / L:16g
+  Saumon 100g cuit = 208 kcal / P:20g / G:0g / L:13g
+  Thon en boîte 100g égoutté = 116 kcal / P:26g / G:0g / L:1g
+  Œuf entier 1 moyen (55g) = 78 kcal / P:6g / G:0g / L:5.5g
+  Blanc d'œuf 1 = 17 kcal / P:3.6g / G:0g / L:0g
+  Crevettes 100g = 99 kcal / P:21g / G:0g / L:1.4g
+
+Féculents :
+  Riz blanc cuit 100g = 130 kcal / P:2.7g / G:28g / L:0.3g
+  Riz basmati cuit 100g = 121 kcal / P:2.5g / G:25g / L:0.4g
+  Pâtes cuites 100g = 131 kcal / P:5g / G:25g / L:1.1g
+  Patate douce cuite 100g = 90 kcal / P:2g / G:21g / L:0.1g
+  Pomme de terre cuite 100g = 87 kcal / P:1.9g / G:20g / L:0.1g
+  Pain de mie 1 tranche 30g = 80 kcal / P:2.5g / G:15g / L:1g
+  Baguette 1 portion 50g = 130 kcal / P:4g / G:25g / L:0.5g
+  Quinoa cuit 100g = 120 kcal / P:4.4g / G:21g / L:1.9g
+
+Légumes :
+  Légumes verts cuits 100g = 25-35 kcal (compter 30 par défaut)
+  Tomate 100g = 18 kcal / P:0.9g / G:3.5g / L:0.2g
+  Avocat 100g = 160 kcal / P:2g / G:2g / L:15g
+
+Matières grasses :
+  Huile d'olive 10g (1 c.soupe) = 88 kcal / L:10g
+  Beurre 10g = 74 kcal / L:8.3g
+  Mayonnaise 15g (1 c.soupe) = 103 kcal / L:11g
+  Vinaigrette 15g = 67 kcal / L:7g
+  Fromage râpé 20g = 80 kcal / P:5g / L:6.5g
+  Fromage de chèvre 30g = 80 kcal / P:5g / L:6.4g
+
+RÈGLES ANTI-SOUS-ESTIMATION :
+- Une portion de riz dans un restaurant asiatique = 250-350g cuit (pas 100g)
+- Une portion de pâtes en restaurant = 200-300g cuit
+- Un steak au restaurant = 180-220g minimum
+- Si tu hésites entre deux estimations de grammage, prendre la plus haute
+- Ne pas oublier la matière grasse de cuisson même si invisible : grillé = +5g huile, sauté = +10-15g, frit = +20-30g${extra}
+
+Réponds UNIQUEMENT en JSON valide sans markdown ni backticks :
 {
   "dish_name": "Nom précis du plat",
+  "context": "home | restaurant | fast_food | takeaway",
   "confidence": 0.85,
   "needs_clarification": false,
   "clarification_question": null,
   "ingredients_breakdown": [
-    {"name": "Blanc de poulet grillé", "estimated_grams": 150, "calories": 165, "protein": 31, "carbs": 0, "fat": 3.5}
+    {"name": "Blanc de poulet grillé", "estimated_grams": 160, "calories": 264, "protein": 50, "carbs": 0, "fat": 5.6},
+    {"name": "Riz blanc cuit", "estimated_grams": 250, "calories": 325, "protein": 6.8, "carbs": 70, "fat": 0.8},
+    {"name": "Huile de cuisson estimée", "estimated_grams": 10, "calories": 88, "protein": 0, "carbs": 0, "fat": 10}
   ],
-  "macros": {"protein": 45, "carbs": 60, "fat": 18, "calories": 582},
+  "macros": {"protein": 57, "carbs": 70, "fat": 16, "calories": 677},
   "meal_type": "lunch",
-  "accuracy_note": "Estimation basée sur assiette standard 28cm"
+  "accuracy_note": "Portion restaurant estimée — riz 250g, poulet 160g, huile cuisson incluse"
 }`;
 }
 
@@ -580,7 +629,7 @@ async function start() {
   try {
     await initDB();
     app.listen(PORT, () => {
-      console.log(`FitForge Backend v2.2 (PostgreSQL) running on port ${PORT}`);
+      console.log(`FitForge Backend v2.3 (PostgreSQL) running on port ${PORT}`);
       console.log(`Anthropic API: ${ANTHROPIC_API_KEY ? 'OK' : '❌ MANQUANTE'}`);
       console.log(`Stripe: ${STRIPE_SECRET_KEY ? 'OK' : 'non configuré'}`);
       console.log(`Database: ${process.env.DATABASE_URL ? 'PostgreSQL connecté' : '❌ DATABASE_URL manquante'}`);
