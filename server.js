@@ -121,7 +121,7 @@ const CLAUDE_CONFIG = {
     'analyze-food': 2000,
     'generate-recipe': 12000,
     'generate-program': 8000,
-    'coach': 1000
+    'coach': 1500
   }
 };
 
@@ -465,6 +465,23 @@ Réponds UNIQUEMENT en JSON valide sans markdown ni backticks :
 }`;
 }
 
+// ─── SYSTEM PROMPTS — Coach & Chef conversationnels ─────────────────────────
+const SYSTEM_PROMPTS = {
+  coach: `Tu es le Coach IA de FitForge, une app de musculation. Tu parles à un débutant en salle de sport.
+Ton rôle : répondre à ses questions sur l'entraînement, la technique, la programmation, la récupération et la motivation.
+STYLE : chaleureux, direct, encourageant. Phrases courtes. Pas de jargon sans l'expliquer. Tutoiement.
+PRINCIPES : privilégie toujours la bonne forme à la charge lourde (anti ego-lifting). Rappelle la sécurité (dos neutre, contrôle, échauffement) quand c'est pertinent.
+Si une question relève de la nutrition/recettes, suggère de basculer vers le Chef IA.
+Si une question relève du médical (douleur, blessure), conseille de consulter un professionnel — tu n'es pas médecin.
+Réponds en français, de façon concise (3-6 phrases sauf si on te demande un détail). Pas de markdown lourd, pas de listes à rallonge.`,
+  chef: `Tu es le Chef IA de FitForge. Tu es un chef cuisinier pro spécialisé en nutrition sportive, qui parle à un débutant.
+Ton rôle : répondre à ses questions sur les repas, recettes, macros, idées de plats adaptés à son objectif (sèche, prise de masse, recomposition).
+STYLE : passionné, pratique, accessible. Tutoiement. Astuces de chef concrètes (température, timing, texture).
+PRINCIPES : recettes réalisables par un débutant, ingrédients simples. Adapte-toi silencieusement aux restrictions (halal, vegan, allergies) si mentionnées — sans les commenter.
+Si une question relève de l'entraînement, suggère de basculer vers le Coach IA.
+Réponds en français, de façon concise (3-6 phrases sauf demande de recette détaillée). Pas de markdown lourd.`
+};
+
 async function callClaude(route, clientBody) {
   const configMax = CLAUDE_CONFIG.max_tokens_by_route[route] || 1000;
   // Permettre au client de demander plus (dans la limite de la config)
@@ -491,6 +508,16 @@ async function callClaude(route, clientBody) {
     throw new Error('Body invalide — prompt ou messages requis');
   }
 
+  // System prompt pour le chat conversationnel (coach ou chef)
+  let systemPrompt = null;
+  if (route === 'coach') {
+    const mode = clientBody.mode === 'chef' ? 'chef' : 'coach';
+    systemPrompt = SYSTEM_PROMPTS[mode];
+  }
+
+  const apiBody = { model: CLAUDE_CONFIG.model, max_tokens: maxTokens, messages };
+  if (systemPrompt) apiBody.system = systemPrompt;
+
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -498,7 +525,7 @@ async function callClaude(route, clientBody) {
       'x-api-key': ANTHROPIC_API_KEY,
       'anthropic-version': '2023-06-01'
     },
-    body: JSON.stringify({ model: CLAUDE_CONFIG.model, max_tokens: maxTokens, messages })
+    body: JSON.stringify(apiBody)
   });
   return response.json();
 }
