@@ -513,6 +513,19 @@ async function callClaude(route, clientBody) {
   if (route === 'coach') {
     const mode = clientBody.mode === 'chef' ? 'chef' : 'coach';
     systemPrompt = SYSTEM_PROMPTS[mode];
+    // Injecter le contexte utilisateur (objectif, programme, ingrédients, menu)
+    if (clientBody.context && typeof clientBody.context === 'object') {
+      try {
+        const ctxStr = JSON.stringify(clientBody.context, null, 0).slice(0, 2500);
+        systemPrompt += `\n\nCONTEXTE DE L'UTILISATEUR (utilise-le pour personnaliser tes réponses, ne le récite pas tel quel) :\n${ctxStr}`;
+        if (mode === 'chef') {
+          systemPrompt += `\nIMPORTANT CHEF : si tu proposes des repas, respecte le programme d'entraînement (plus de glucides les jours de grosse séance) ET garde les ingrédients que l'utilisateur a déjà choisis (aliments_aimes). Évite aliments_evites et allergies absolument.`;
+        }
+        if (mode === 'coach') {
+          systemPrompt += `\nIMPORTANT COACH : tiens compte du programme et de l'objectif de l'utilisateur. Si tu suggères de modifier le programme, explique pourquoi clairement.`;
+        }
+      } catch (e) { /* contexte ignoré si invalide */ }
+    }
   }
 
   const apiBody = { model: CLAUDE_CONFIG.model, max_tokens: maxTokens, messages };
