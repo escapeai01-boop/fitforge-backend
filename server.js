@@ -467,14 +467,14 @@ Réponds UNIQUEMENT en JSON valide sans markdown ni backticks :
 
 // ─── SYSTEM PROMPTS — Coach & Chef conversationnels ─────────────────────────
 const SYSTEM_PROMPTS = {
-  coach: `Tu es le Coach IA de FitForge, une app de musculation. Tu parles à un débutant en salle de sport.
+  coach: `Tu es le Coach IA de ForkAndForge, une app de musculation. Tu parles à un débutant en salle de sport.
 Ton rôle : répondre à ses questions sur l'entraînement, la technique, la programmation, la récupération et la motivation.
 STYLE : chaleureux, direct, encourageant. Phrases courtes. Pas de jargon sans l'expliquer. Tutoiement.
 PRINCIPES : privilégie toujours la bonne forme à la charge lourde (anti ego-lifting). Rappelle la sécurité (dos neutre, contrôle, échauffement) quand c'est pertinent.
 Si une question relève de la nutrition/recettes, suggère de basculer vers le Chef IA.
 Si une question relève du médical (douleur, blessure), conseille de consulter un professionnel — tu n'es pas médecin.
 Réponds en français, de façon concise (3-6 phrases sauf si on te demande un détail). Pas de markdown lourd, pas de listes à rallonge.`,
-  chef: `Tu es le Chef IA de FitForge. Tu es un chef cuisinier pro spécialisé en nutrition sportive, qui parle à un débutant.
+  chef: `Tu es le Chef IA de ForkAndForge. Tu es un chef cuisinier pro spécialisé en nutrition sportive, qui parle à un débutant.
 Ton rôle : répondre à ses questions sur les repas, recettes, macros, idées de plats adaptés à son objectif (sèche, prise de masse, recomposition).
 STYLE : passionné, pratique, accessible. Tutoiement. Astuces de chef concrètes (température, timing, texture).
 PRINCIPES : recettes réalisables par un débutant, ingrédients simples. Adapte-toi silencieusement aux restrictions (halal, vegan, allergies) si mentionnées — sans les commenter.
@@ -545,7 +545,7 @@ async function callClaude(route, clientBody) {
 
 // ─── ROUTES HEALTH ────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', version: '2.9', service: 'FitForge Backend', db: 'postgresql' });
+  res.json({ status: 'ok', version: '3.0', service: 'ForkAndForge Backend', db: 'postgresql' });
 });
 
 // ─── ROUTES AUTH ─────────────────────────────────────────────────────────────
@@ -693,6 +693,30 @@ app.get('/auth/verify', async (req, res) => {
     });
   } catch (e) {
     console.error('verify error:', e.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Suppression de compte (droit RGPD) — ne dépend PAS d'un abonnement actif :
+// un utilisateur dont l'essai/abo a expiré doit pouvoir supprimer son compte.
+app.delete('/account', async (req, res) => {
+  const token = (req.headers.authorization || '').replace('Bearer ', '').trim();
+  if (!token) return res.status(401).json({ error: 'Token manquant' });
+
+  try {
+    const sessionRes = await pool.query('SELECT email FROM sessions WHERE token = $1', [token]);
+    if (!sessionRes.rows.length) return res.status(401).json({ error: 'Session invalide — reconnecte-toi' });
+
+    const email = sessionRes.rows[0].email;
+    // Supprime l'utilisateur ; les sessions liées partent en cascade (ON DELETE CASCADE).
+    await pool.query('DELETE FROM users WHERE email = $1', [email]);
+    // Filet de sécurité au cas où la cascade ne serait pas active.
+    await pool.query('DELETE FROM sessions WHERE email = $1', [email]);
+
+    console.log('Compte supprimé:', email);
+    res.json({ ok: true, deleted: true });
+  } catch (e) {
+    console.error('account delete error:', e.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
