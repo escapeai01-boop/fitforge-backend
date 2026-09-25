@@ -528,7 +528,7 @@ async function callClaude(route, clientBody) {
     }
   }
 
-  const apiBody = { model: CLAUDE_CONFIG.model, max_tokens: maxTokens, messages };
+  const apiBody = { model: CLAUDE_CONFIG.model, max_tokens: maxTokens, messages, stream: true };
   if (systemPrompt) apiBody.system = systemPrompt;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -540,7 +540,53 @@ async function callClaude(route, clientBody) {
     },
     body: JSON.stringify(apiBody)
   });
-  return response.json();
+
+  // Si l'API renvoie une erreur (crédit, modèle, etc.), elle n'est PAS en flux : on la lit en JSON.
+  if (!response.ok) {
+    let errPayload;
+    try { errPayload = await response.json(); }
+    catch (e) { errPayload = { error: { message: 'Erreur API (' + response.status + ')' } }; }
+    return errPayload;
+  }
+
+  // Lecture du flux SSE : on réassemble le texte au fur et à mesure (pas de timeout sur longues générations).
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let fullText = '';
+  let stopReason = null;
+  let usage = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop(); // garder la ligne incomplète pour le prochain tour
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const data = trimmed.slice(5).trim();
+      if (!data || data === '[DONE]') continue;
+      let evt;
+      try { evt = JSON.parse(data); } catch (e) { continue; }
+      if (evt.type === 'content_block_delta' && evt.delta && typeof evt.delta.text === 'string') {
+        fullText += evt.delta.text;
+      } else if (evt.type === 'message_delta' && evt.delta && evt.delta.stop_reason) {
+        stopReason = evt.delta.stop_reason;
+        if (evt.usage) usage = evt.usage;
+      } else if (evt.type === 'error') {
+        return { error: evt.error || { message: 'Erreur pendant la génération' } };
+      }
+    }
+  }
+
+  // On reconstruit la même forme de réponse que l'API non-streamée, pour ne rien casser en aval.
+  return {
+    content: [{ type: 'text', text: fullText }],
+    stop_reason: stopReason,
+    usage: usage
+  };
 }
 
 // ─── ROUTES HEALTH ────────────────────────────────────────────────────────────
