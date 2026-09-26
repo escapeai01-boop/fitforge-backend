@@ -899,6 +899,33 @@ app.post('/analyze-food', rateLimit(10, 60 * 1000), authMiddleware, async (req, 
 });
 
 app.post('/generate-recipe', rateLimit(6, 60 * 1000), authMiddleware, (req, res) => claudeRoute('generate-recipe', 'recipes', req, res));
+// Menu de la semaine découpé en blocs de jours générés EN PARALLÈLE (≈ 40-70 s au lieu de 3 min+).
+// Compte pour 1 seul crédit "recipes" du quota mensuel, même s'il y a 4 blocs.
+app.post('/generate-week', rateLimit(4, 60 * 1000), authMiddleware, async (req, res) => {
+  const prompts = Array.isArray(req.body.prompts) ? req.body.prompts.filter(p => typeof p === 'string' && p.length > 0).slice(0, 4) : [];
+  if (!prompts.length) return res.status(400).json({ error: 'prompts requis' });
+  const quota = checkQuota(req.user, 'recipes');
+  if (!quota.allowed) {
+    return res.status(429).json({
+      error: `Quota recipes atteint (${quota.used}/${quota.limit} ce mois)`, code: 'QUOTA_EXCEEDED', quota_type: 'recipes',
+      used: quota.used, limit: quota.limit, message: 'Quota mensuel atteint. Réinitialisation le 1er du mois.', reset_date: req.user.quota_reset_date
+    });
+  }
+  const maxTok = Math.min(parseInt(req.body.max_tokens) || 5000, 6000);
+  try {
+    const results = await Promise.all(prompts.map(p =>
+      callClaude('generate-recipe', { prompt: p, max_tokens: maxTok }).catch(e => ({ error: { message: e.message } }))
+    ));
+    const parts = results.map(d => d && d.error
+      ? { error: (d.error && d.error.message) || 'Erreur' }
+      : { text: (d.content && d.content[0] && d.content[0].text) || '', stop_reason: d.stop_reason || null });
+    if (parts.some(p => !p.error)) await consumeQuota(req.user, 'recipes');
+    res.json({ parts });
+  } catch (e) {
+    console.error('generate-week error:', e.message);
+    res.status(500).json({ error: 'Erreur generate-week' });
+  }
+});
 app.post('/generate-program', rateLimit(4, 60 * 1000), authMiddleware, (req, res) => claudeRoute('generate-program', 'programs', req, res));
 app.post('/coach', rateLimit(15, 60 * 1000), authMiddleware, (req, res) => claudeRoute('coach', 'coach_messages', req, res));
 
