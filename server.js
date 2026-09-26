@@ -75,6 +75,9 @@ app.use(cors({
   credentials: true
 }));
 
+// Railway passe par un proxy : sans ça, tous les utilisateurs auraient la même IP (limites partagées)
+app.set('trust proxy', 1);
+
 app.use('/stripe/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json({ limit: '10mb' }));
 
@@ -83,7 +86,8 @@ const RATE_LIMITS = new Map();
 
 function rateLimit(maxRequests, windowMs) {
   return function(req, res, next) {
-    const key = (req.ip || 'unknown') + req.path;
+    const auth = (req.headers && req.headers.authorization) || '';
+    const key = (auth ? auth.slice(-24) : (req.ip || 'unknown')) + req.path;
     const now = Date.now();
     const entry = RATE_LIMITS.get(key);
     if (!entry || now > entry.reset_at) {
@@ -888,14 +892,15 @@ async function claudeRoute(route, quotaType, req, res) {
   }
 }
 
-app.post('/analyze-food', authMiddleware, async (req, res) => {
+// Anti-abus sur les routes qui consomment des crédits Anthropic (en plus des quotas mensuels)
+app.post('/analyze-food', rateLimit(10, 60 * 1000), authMiddleware, async (req, res) => {
   if (!req.body.image_base64) return res.status(400).json({ error: 'image_base64 requis' });
   await claudeRoute('analyze-food', 'photo_scans', req, res);
 });
 
-app.post('/generate-recipe', authMiddleware, (req, res) => claudeRoute('generate-recipe', 'recipes', req, res));
-app.post('/generate-program', authMiddleware, (req, res) => claudeRoute('generate-program', 'programs', req, res));
-app.post('/coach', authMiddleware, (req, res) => claudeRoute('coach', 'coach_messages', req, res));
+app.post('/generate-recipe', rateLimit(6, 60 * 1000), authMiddleware, (req, res) => claudeRoute('generate-recipe', 'recipes', req, res));
+app.post('/generate-program', rateLimit(4, 60 * 1000), authMiddleware, (req, res) => claudeRoute('generate-program', 'programs', req, res));
+app.post('/coach', rateLimit(15, 60 * 1000), authMiddleware, (req, res) => claudeRoute('coach', 'coach_messages', req, res));
 
 app.get('/quotas', authMiddleware, async (req, res) => {
   await resetQuotasIfNewMonth(req.user);
@@ -907,10 +912,12 @@ app.get('/quotas', authMiddleware, async (req, res) => {
 });
 
 // ─── Route admin — token développeur permanent ───────────────────────────────
-// Usage : GET /admin/dev-token?secret=FITFORGE_DEV_2026
-// Crée un compte dev avec abo actif permanent + quotas illimités
-app.get('/admin/dev-token', async (req, res) => {
-  const ADMIN_SECRET = 'FITFORGE_DEV_2026';
+// DÉSACTIVÉE par défaut (version publique). Pour la réactiver : ajouter la variable
+// ADMIN_SECRET dans Railway → Variables (mot de passe long et secret), puis
+// GET /admin/dev-token?secret=<ADMIN_SECRET>
+app.get('/admin/dev-token', rateLimit(5, 15 * 60 * 1000), async (req, res) => {
+  const ADMIN_SECRET = process.env.ADMIN_SECRET;
+  if (!ADMIN_SECRET || ADMIN_SECRET.length < 16) return res.status(404).json({ error: 'Not found' });
   if (req.query.secret !== ADMIN_SECRET) return res.status(403).json({ error: 'Accès refusé' });
   const DEV_EMAIL = 'dev@fitforge.internal';
   const DEV_EXPIRES = new Date('2099-01-01').getTime();
