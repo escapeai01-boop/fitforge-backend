@@ -80,6 +80,14 @@ app.set('trust proxy', 1);
 
 app.use('/stripe/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json({ limit: '10mb' }));
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+  next();
+});
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
 const RATE_LIMITS = new Map();
@@ -119,6 +127,13 @@ const DEFAULT_QUOTAS = {
   coach_messages: 50
 };
 
+const TRIAL_QUOTAS = {
+  photo_scans: 15,
+  recipes: 4,
+  programs: 2,
+  coach_messages: 20
+};
+
 const CLAUDE_CONFIG = {
   model: 'claude-sonnet-4-6',
   max_tokens_by_route: {
@@ -130,9 +145,33 @@ const CLAUDE_CONFIG = {
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+// Ancien format (sel commun à tous les comptes) — gardé UNIQUEMENT pour reconnaître les anciens comptes.
 function hashPassword(password) {
   const salt = JWT_SECRET.slice(0, 16);
   return crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
+}
+// Nouveau format : sel aléatoire propre à chaque compte → "v2$<sel>$<empreinte>"
+function hashPasswordV2(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1 }).toString('hex');
+  return 'v2$' + salt + '$' + hash;
+}
+function safeEqualHex(a, b) {
+  const x = Buffer.from(a || '', 'hex'), y = Buffer.from(b || '', 'hex');
+  return x.length > 0 && x.length === y.length && crypto.timingSafeEqual(x, y);
+}
+// Vérifie un mot de passe quel que soit le format stocké. { ok, needsUpgrade }
+function verifyPassword(password, stored) {
+  if (typeof stored !== 'string' || !stored) { hashPasswordV2(password); return { ok: false }; }
+  if (stored.startsWith('v2$')) {
+    const parts = stored.split('$');
+    const hash = crypto.scryptSync(password, parts[1], 64, { N: 16384, r: 8, p: 1 }).toString('hex');
+    return { ok: safeEqualHex(hash, parts[2]), needsUpgrade: false };
+  }
+  return { ok: safeEqualHex(hashPassword(password), stored), needsUpgrade: true };
+}
+if (JWT_SECRET === 'fitforge-secret-change-me') {
+  console.warn('⚠️  JWT_SECRET non défini dans Railway (valeur par défaut). Ne le changez PAS sans prévenir : les anciens mots de passe en dépendent jusqu\'à leur migration automatique à la prochaine connexion.');
 }
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -167,7 +206,8 @@ function checkQuota(user, type) {
   }
   const used = (user.quotas_used && user.quotas_used[type]) || 0;
   const extra = (user.extra_quotas && user.extra_quotas[type]) || 0;
-  const limit = DEFAULT_QUOTAS[type] + extra;
+  const base = user.subscription_status === 'trial' ? TRIAL_QUOTAS : DEFAULT_QUOTAS;
+  const limit = base[type] + extra;
   return { allowed: used < limit, ok: used < limit, used, limit, remaining: Math.max(0, limit - used) };
 }
 
@@ -623,7 +663,7 @@ app.post('/auth/signup', rateLimit(5, 15 * 60 * 1000), async (req, res) => {
       VALUES ($1, $2, $3, 'trial', $4, $5, $6, $7)
     `, [
       emailLower,
-      hashPassword(password),
+      hashPasswordV2(password),
       now,
       trialEndsAt,
       JSON.stringify({ photo_scans: 0, recipes: 0, programs: 0, coach_messages: 0 }),
@@ -639,7 +679,7 @@ app.post('/auth/signup', rateLimit(5, 15 * 60 * 1000), async (req, res) => {
 
     res.json({
       token,
-      user: { email: emailLower, subscription_status: 'trial', trial_ends_at: trialEndsAt, trial_days_remaining: trialDays, quotas: DEFAULT_QUOTAS }
+      user: { email: emailLower, subscription_status: 'trial', trial_ends_at: trialEndsAt, trial_days_remaining: trialDays, quotas: TRIAL_QUOTAS }
     });
   } catch (e) {
     console.error('signup error:', e.message);
@@ -652,19 +692,20 @@ app.post('/auth/login', rateLimit(10, 15 * 60 * 1000), async (req, res) => {
   if (!email || !password) return res.status(400).json({ error: 'Email et mot de passe requis' });
 
   const emailLower = email.toLowerCase().trim();
-  const inputHash = hashPassword(password);
 
   try {
     const result = await pool.query('SELECT * FROM users WHERE email = $1', [emailLower]);
     const user = result.rows[0];
 
-    // Timing constant anti-énumération
-    const storedHash = user ? user.password_hash : 'dummy_hash_000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000';
-    const hashBuffer = Buffer.from(inputHash, 'hex');
-    const storedBuffer = Buffer.from(storedHash.slice(0, inputHash.length), 'hex');
-    const match = user && hashBuffer.length === storedBuffer.length && crypto.timingSafeEqual(hashBuffer, storedBuffer);
+    // Même temps de calcul que le compte existe ou non (anti-énumération)
+    const check = verifyPassword(String(password), user ? user.password_hash : null);
+    if (!user || !check.ok) return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
 
-    if (!match) return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
+    // Migration transparente vers le nouveau format à la première connexion réussie
+    if (check.needsUpgrade) {
+      try { await pool.query('UPDATE users SET password_hash = $1 WHERE email = $2', [hashPasswordV2(String(password)), emailLower]); }
+      catch (e) { console.error('password upgrade error:', e.message); }
+    }
 
     const now = Date.now();
     const token = crypto.randomBytes(32).toString('hex');
@@ -687,7 +728,7 @@ app.post('/auth/login', rateLimit(10, 15 * 60 * 1000), async (req, res) => {
         subscription_ends_at: user.subscription_ends_at,
         plan: user.plan,
         quotas_used: user.quotas_used,
-        quotas_limit: DEFAULT_QUOTAS,
+        quotas_limit: (user && user.subscription_status === 'trial') ? TRIAL_QUOTAS : DEFAULT_QUOTAS,
         is_active: isSubscriptionActive(user)
       }
     });
@@ -738,7 +779,7 @@ app.get('/auth/verify', async (req, res) => {
         trial_days_remaining: trialDaysRemaining,
         plan: user.plan,
         quotas_used: user.quotas_used,
-        quotas_limit: DEFAULT_QUOTAS
+        quotas_limit: (user && user.subscription_status === 'trial') ? TRIAL_QUOTAS : DEFAULT_QUOTAS
       }
     });
   } catch (e) {
@@ -749,7 +790,7 @@ app.get('/auth/verify', async (req, res) => {
 
 // Suppression de compte (droit RGPD) — ne dépend PAS d'un abonnement actif :
 // un utilisateur dont l'essai/abo a expiré doit pouvoir supprimer son compte.
-app.delete('/account', async (req, res) => {
+app.delete('/account', rateLimit(5, 15 * 60 * 1000), async (req, res) => {
   const token = (req.headers.authorization || '').replace('Bearer ', '').trim();
   if (!token) return res.status(401).json({ error: 'Token manquant' });
 
@@ -954,7 +995,7 @@ app.get('/admin/dev-token', rateLimit(5, 15 * 60 * 1000), async (req, res) => {
     if (existing.rows.length === 0) {
       await pool.query(
         'INSERT INTO users (email, password_hash, created_at, subscription_status, trial_ends_at, subscription_ends_at, plan, quotas_used, extra_quotas, quota_reset_date) VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$8,$3)',
-        [DEV_EMAIL, hashPassword('dev_internal'), Date.now(), 'active', DEV_EXPIRES, 'dev', EMPTY_QUOTAS, EMPTY_QUOTAS]
+        [DEV_EMAIL, hashPasswordV2(crypto.randomBytes(24).toString('hex')), Date.now(), 'active', DEV_EXPIRES, 'dev', EMPTY_QUOTAS, EMPTY_QUOTAS]
       );
     } else {
       await pool.query(
