@@ -58,6 +58,9 @@ async function initDB() {
     CREATE INDEX IF NOT EXISTS idx_sessions_email ON sessions(email);
     CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
     CREATE INDEX IF NOT EXISTS idx_users_stripe ON users(stripe_customer_id);
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_health_at BIGINT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS consent_version TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS age_confirmed BOOLEAN DEFAULT FALSE;
   `);
   console.log('✅ Tables PostgreSQL prêtes');
 
@@ -643,6 +646,11 @@ app.post('/auth/signup', rateLimit(5, 15 * 60 * 1000), async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email et mot de passe requis' });
   if (password.length < 8) return res.status(400).json({ error: 'Mot de passe trop court (8 caractères minimum)' });
+  // RGPD : consentement explicite aux données de santé + âge minimum (16 ans), exigés et enregistrés
+  if (req.body.consent_health !== true || req.body.age_confirmed !== true) {
+    return res.status(400).json({ error: 'Consentement aux données de santé et âge minimum (16 ans) requis.' });
+  }
+  const consentVersion = String(req.body.consent_version || '').slice(0, 20) || 'unknown';
 
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email)) return res.status(400).json({ error: 'Email invalide' });
@@ -671,6 +679,7 @@ app.post('/auth/signup', rateLimit(5, 15 * 60 * 1000), async (req, res) => {
       quotaResetDate
     ]);
 
+    await pool.query('UPDATE users SET consent_health_at = $1, consent_version = $2, age_confirmed = TRUE WHERE email = $3', [Date.now(), consentVersion, emailLower]);
     const token = crypto.randomBytes(32).toString('hex');
     await pool.query(
       'INSERT INTO sessions (token, email, expires_at) VALUES ($1, $2, $3)',
@@ -784,6 +793,23 @@ app.get('/auth/verify', async (req, res) => {
     });
   } catch (e) {
     console.error('verify error:', e.message);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Consentement données de santé pour les comptes créés avant la v5.38 (preuve RGPD : date + version)
+app.post('/auth/consent', rateLimit(10, 15 * 60 * 1000), async (req, res) => {
+  const token = (req.headers.authorization || '').replace('Bearer ', '').trim();
+  if (!token) return res.status(401).json({ error: 'Token manquant' });
+  if (req.body.consent_health !== true || req.body.age_confirmed !== true) return res.status(400).json({ error: 'Consentement requis' });
+  try {
+    const r = await pool.query('SELECT email, expires_at FROM sessions WHERE token = $1', [token]);
+    if (!r.rows.length || Date.now() > Number(r.rows[0].expires_at)) return res.status(401).json({ error: 'Session invalide — reconnecte-toi' });
+    await pool.query('UPDATE users SET consent_health_at = $1, consent_version = $2, age_confirmed = TRUE WHERE email = $3',
+      [Date.now(), String(req.body.consent_version || '').slice(0, 20) || 'unknown', r.rows[0].email]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('consent error:', e.message);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
